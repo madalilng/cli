@@ -128,22 +128,18 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
                             println!("Received start mining message!");
                             println!("Mining starting...");
                             println!("Nonce range: {} - {}", nonce_range.start, nonce_range.end);
+
+                            let rt = tokio::runtime::Handle::current();
                             let hash_timer = Instant::now();
-                            let core_ids = core_affinity::get_core_ids().unwrap();
                             let nonces_per_thread = 10_000;
-                            let handles = core_ids
+                            let handles = (0..threads)
                                 .into_iter()
                                 .map(|i| {
-                                    std::thread::spawn({
+                                    rt.spawn_blocking({
                                         let mut memory = equix::SolverMemory::new();
                                         move || {
-                                            if (i.id as u32).ge(&threads) {
-                                                return None
-                                            } 
-
-                                            let _ = core_affinity::set_for_current(i);
-
-                                            let first_nonce = nonce_range.start + (nonces_per_thread * (i.id as u64));
+                                            // let _ = core_affinity::set_for_current(i);
+                                            let first_nonce = nonce_range.start + (nonces_per_thread * (i as u64));
                                             let mut nonce = first_nonce;
                                             let mut best_nonce = nonce;
                                             let mut best_difficulty = 0;
@@ -186,22 +182,25 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
                                     })
                                 })
                                 .collect::<Vec<_>>();
+                                
+                            // Join handles and return best nonce
+                            let mut best_nonce: u64 = 0;
+                            let mut best_difficulty = 0;
+                            let mut best_hash = drillx::Hash::default();
+                            let mut total_nonces_checked = 0;
 
-                                // Join handles and return best nonce
-                                let mut best_nonce: u64 = 0;
-                                let mut best_difficulty = 0;
-                                let mut best_hash = drillx::Hash::default();
-                                let mut total_nonces_checked = 0;
-                                for h in handles {
-                                    if let Ok(Some((nonce, difficulty, hash, nonces_checked))) = h.join() {
-                                        total_nonces_checked += nonces_checked;
-                                        if difficulty > best_difficulty {
-                                            best_difficulty = difficulty;
-                                            best_nonce = nonce;
-                                            best_hash = hash;
-                                        }
+                            let joined = futures::future::join_all(handles).await;
+                            
+                            for h in joined {
+                                if let Ok(Some((nonce, difficulty, hash, nonces_checked))) = h {
+                                    total_nonces_checked += nonces_checked;
+                                    if difficulty > best_difficulty {
+                                        best_difficulty = difficulty;
+                                        best_nonce = nonce;
+                                        best_hash = hash;
                                     }
                                 }
+                            }
 
                             let hash_time = hash_timer.elapsed();
 
